@@ -762,6 +762,15 @@
               </span>
               Kiểm tra giảm xóc
             </button>
+            <button class="mode" data-cmd="8" disabled>
+              <span class="ic">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 12 h4 l2 -6 l3 12 l2 -6 h4" />
+                  <circle cx="20" cy="6" r="1.5" fill="currentColor" stroke="none" />
+                </svg>
+              </span>
+              Chẩn đoán động cơ
+            </button>
             <button class="mode" data-cmd="5" disabled>
               <span class="ic">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -914,8 +923,8 @@
       }
 
       /* ── Phân quyền module: mặt nạ do firmware gửi ("LIC mask=..") ── */
-      let licenseMask = 0x7f; // mặc định mở hết cho tới khi nhận LIC
-      const CMD_BIT = { "1": 0, "2": 1, "3": 2, "4": 3, "7": 4, "5": 5, "6": 6 };
+      let licenseMask = 0xff; // mặc định mở hết cho tới khi nhận LIC
+      const CMD_BIT = { "1": 0, "2": 1, "3": 2, "4": 3, "7": 4, "8": 5, "5": 6, "6": 7 };
       function applyLicense() {
         document.querySelectorAll(".mode").forEach((b) => {
           const bit = CMD_BIT[b.dataset.cmd];
@@ -1031,11 +1040,13 @@
         if (mode === 5) {
           if (simHistN === 0) return `M5 n=0`;
           return [
-            `M5 n=4`,
+            `M5 n=6`,
             `h=BRAKE|48.6|16.8|4.1`,
             `h=TURN|5.6`,
             `h=RPM|3120|4`,
             `h=STEER|8.4`,
+            `h=SHOCK|1|0.28`,
+            `h=DIAG|88|42|0`,
           ].join("\n");
         }
         if (mode === 6) {
@@ -1062,13 +1073,38 @@
           }
           return `M7 st=3 bnc=1 zeta=0.28 f=1.4 pk=0.34 av=0`;
         }
+        if (mode === 8) {
+          /* Garăng ti: xoay vòng 3 kịch bản mỗi ~9s để khoe đủ đánh giá:
+             0 = ÊM, 1 = RUNG NHẸ, 2 = BỎ MÁY. */
+          const phase = Math.floor(t / 30) % 3;
+          const rpm = Math.round(820 + 30 * Math.sin(t / 2));
+          let bal, vib, std, mis;
+          if (phase === 0) {
+            bal = 88 + Math.round(4 * Math.sin(t / 3));
+            vib = 42 + Math.round(6 * Math.sin(t / 4));
+            std = 20 + Math.round(8 * Math.abs(Math.sin(t / 5)));
+            mis = 0;
+          } else if (phase === 1) {
+            bal = 64;
+            vib = 96;
+            std = 55;
+            mis = 0;
+          } else {
+            bal = 38;
+            vib = 132;
+            std = 120;
+            mis = 1;
+          }
+          const mnt = vib <= 140 ? 1 : 0;
+          return `M8 st=1 rpm=${rpm} std=${std} vib=${vib} bal=${bal} mis=${mis} mnt=${mnt} cyl=${simCyl} f=${fx(rpm / 30, 1)}`;
+        }
         return `M1 st=0 v0=${simV0} tm=0 ds=0 g=0 yaw=0 lat=0 di=0`;
       }
 
       /* ── Gửi lệnh (DEMO): điều khiển bộ sinh dữ liệu thay vì ghi BLE ── */
       function send(str) {
         if (!simTimer) return;
-        if (/^[1-7]$/.test(str)) {
+        if (/^[1-8]$/.test(str)) {
           simMode = +str;
           simTick = 0;
         } else if (str === "n") {
@@ -1087,7 +1123,7 @@
             simV0 = simV0 === 50 ? 30 : 50;
             simBrakeArmed = false;
             toast("V0 chọn: " + simV0 + " km/h");
-          } else if (simMode === 3) {
+          } else if (simMode === 3 || simMode === 8) {
             const list = [1, 2, 3, 4, 5, 6, 8, 12];
             simCyl = list[(list.indexOf(simCyl) + 1) % list.length];
             toast("Số xy-lanh: " + simCyl);
@@ -1248,6 +1284,7 @@
       const ST_RPM = ["TẮT/CHỜ", "ĐANG NỔ"];
       const ST_STEER = ["SẴN SÀNG", "ĐANG ĐO", "HOÀN TẤT"];
       const ST_SHOCK = ["CHƯA ĐO", "NHÚN XE...", "ĐANG GHI", "HOÀN TẤT"];
+      const ST_DIAG = ["TẮT/CHỜ", "ĐANG NỔ"];
       const CAL_ST = [
         "Sẵn sàng (giữ nút để bắt đầu)",
         "ACCEL - lật 6 mặt, nhấn sâu mỗi mặt",
@@ -1561,7 +1598,7 @@
         const f = (k) => parseFloat(kv[k]);
         const s = (k) => (k in kv ? kv[k] : "—");
         setActiveMode(mode);
-        const badge = mode <= 6 ? mode + "/6" : "GX";
+        const badge = mode <= 6 ? mode + "/6" : mode === 7 ? "GX" : "CĐ";
 
         if (mode === 1) {
           const st = +kv.st,
@@ -1635,6 +1672,8 @@
               else if (type === "STEER") txt = `${idx}. Rơ lái ${v[0]} độ`;
               else if (type === "SHOCK")
                 txt = `${idx}. Giảm xóc ${v[0]} lần nảy ζ${v[1]}`;
+              else if (type === "DIAG")
+                txt = `${idx}. Chẩn đoán ${v[0]}% ${v[1]}mg ${+v[2] ? "bỏ máy" : "êm"}`;
               if (txt) items.push({ list: txt });
             });
           renderRows("LỊCH SỬ " + n + " bản ghi", badge, items);
@@ -1698,6 +1737,35 @@
             { lbl: "Độ nhún", val: s("pk") + " g" },
             { lbl: "Đánh giá", val: rating },
           ]);
+        } else if (mode === 8) {
+          const on = +kv.st === 1; /* ĐANG NỔ mới có chỉ số chẩn đoán */
+          const bal = +kv.bal || 0,
+            vib = +kv.vib || 0,
+            std = +kv.std || 0,
+            mis = +kv.mis === 1,
+            mnt = +kv.mnt === 1;
+          let rating = "—";
+          if (on)
+            rating = mis
+              ? "🔴 BỎ MÁY"
+              : vib > 140 || std > 90 || bal < 55
+                ? "🔴 RUNG MẠNH"
+                : vib > 60 || std > 40 || bal < 70
+                  ? "🟡 RUNG NHẸ"
+                  : "🟢 ÊM";
+          renderRows("CHẨN ĐOÁN ĐỘNG CƠ", badge, [
+            { lbl: "Trạng thái", val: ST_DIAG[+kv.st] || "?" },
+            { lbl: "RPM", val: on ? s("rpm") + " v/p (dao động ±" + std + ")" : "—" },
+            { lbl: "Mức rung", val: on ? vib + " mg" : "—" },
+            { lbl: "Cân bằng xy-lanh", val: on ? bal + " %" : "—" },
+            { lbl: "Bỏ máy", val: on ? (mis ? "CÓ" : "Không") : "—" },
+            {
+              lbl: "Chân máy",
+              val: on ? (mnt ? "Bình thường" : "Nghi yếu") : "—",
+            },
+            { lbl: "Số xy-lanh", val: s("cyl") },
+            { lbl: "Đánh giá", val: rating },
+          ]);
         }
 
         /* ── Trực quan hóa realtime theo chế độ ── */
@@ -1733,6 +1801,7 @@
         4: "Đo lại",
         5: "Xóa lịch sử",
         6: "Bắt đầu / Hủy",
+        8: "Lựa chọn số xy-lanh",
       };
 
       let curMode = null;
